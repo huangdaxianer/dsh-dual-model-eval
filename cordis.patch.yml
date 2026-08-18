@@ -1,0 +1,12 @@
+# This bundle is applied after the built-in web profile layers. The first row
+# mounts the Host command/orchestrator; dsh.client discovers the browser half
+# from this package's manifest.
+- insert:
+    - id: dual-model-eval
+      name: dsh-dual-model-eval
+      config:
+        initializeNonGitWorkspace: true
+        requireCleanWorktree: true
+        keepWorktrees: false
+        timeoutMs: 1800000
+        maxModels: 4
