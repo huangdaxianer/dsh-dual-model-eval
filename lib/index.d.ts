@@ -49,6 +49,30 @@ interface DualEvalChangeStats {
   readonly deletions: number;
   readonly filesChanged: number;
   readonly binaryFiles: number;
+  /** Paths reported by Git numstat. Optional so older durable events still replay. */
+  readonly files?: readonly string[];
+}
+/** Browser request binding for one candidate's reconstructed final workspace. */
+interface DualEvalFileRequest {
+  readonly artifactDirectory: string;
+  readonly runId: string;
+  readonly index: number;
+  readonly path: string;
+}
+/** Bounded text projection returned by the local preview endpoint. */
+interface DualEvalFilePreview {
+  readonly path: string;
+  readonly size: number;
+  readonly content: string;
+  readonly truncated: boolean;
+  readonly binary: boolean;
+  readonly deleted: boolean;
+}
+/** Browser request for the final candidate workspace archive. */
+interface DualEvalWorkspaceRequest {
+  readonly artifactDirectory: string;
+  readonly runId: string;
+  readonly index: number;
 }
 /** One incremental bounded projection published while a candidate is still running. */
 interface DualEvalWorkerProgress {
@@ -144,6 +168,7 @@ interface Config {
   maxResponseChars?: number;
   maxStatusChars?: number;
   maxPatchPreviewChars?: number;
+  maxAcceptedHistoryChars?: number;
   gitCommand?: string;
   gitGraceMs?: number;
   gitMaxOutputBytes?: number;
@@ -152,6 +177,12 @@ declare const Config: z<Config>;
 interface TraceObservation {
   readonly emit: boolean;
   readonly tool?: DualEvalToolEvidence;
+}
+interface AcceptedHistoryProjection {
+  readonly text: string;
+  readonly totalRounds: number;
+  readonly includedRounds: number;
+  readonly truncated: boolean;
 }
 /** O(1)-per-event projector shared by durable final capture and live progress. */
 declare class ChildTraceTracker {
@@ -172,8 +203,10 @@ declare class ChildTraceTracker {
 declare function projectChildTrace(events: readonly SessionEvent[]): ReturnType<ChildTraceTracker['snapshot']>;
 /** Parse Git --numstat output without deriving line counts from rendered patches. */
 declare function parseNumstat(output: string): DualEvalChangeStats;
+/** Project only adopted rounds into bounded shared context for fresh child Sessions. */
+declare function projectAcceptedHistory(events: readonly SessionEvent[], maxChars: number): AcceptedHistoryProjection;
 /** Register the Host command and isolated subagent provider. */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, type DualEvalChangeStats, type DualEvalModelRoute, type DualEvalRunStatus, type DualEvalToolEvidence, type DualEvalWorkerEvidence, type DualEvalWorkerMetrics, type DualEvalWorkerProgress, apply, inject, name, parseNumstat, projectChildTrace };
+export { AcceptedHistoryProjection, Config, type DualEvalChangeStats, type DualEvalFilePreview, type DualEvalFileRequest, type DualEvalModelRoute, type DualEvalRunStatus, type DualEvalToolEvidence, type DualEvalWorkerEvidence, type DualEvalWorkerMetrics, type DualEvalWorkerProgress, type DualEvalWorkspaceRequest, apply, inject, name, parseNumstat, projectAcceptedHistory, projectChildTrace };
 //# sourceMappingURL=index.d.ts.map

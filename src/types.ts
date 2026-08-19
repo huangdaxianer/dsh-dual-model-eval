@@ -48,6 +48,33 @@ export interface DualEvalChangeStats {
   readonly deletions: number
   readonly filesChanged: number
   readonly binaryFiles: number
+  /** Paths reported by Git numstat. Optional so older durable events still replay. */
+  readonly files?: readonly string[]
+}
+
+/** Browser request binding for one candidate's reconstructed final workspace. */
+export interface DualEvalFileRequest {
+  readonly artifactDirectory: string
+  readonly runId: string
+  readonly index: number
+  readonly path: string
+}
+
+/** Bounded text projection returned by the local preview endpoint. */
+export interface DualEvalFilePreview {
+  readonly path: string
+  readonly size: number
+  readonly content: string
+  readonly truncated: boolean
+  readonly binary: boolean
+  readonly deleted: boolean
+}
+
+/** Browser request for the final candidate workspace archive. */
+export interface DualEvalWorkspaceRequest {
+  readonly artifactDirectory: string
+  readonly runId: string
+  readonly index: number
 }
 
 /** One incremental bounded projection published while a candidate is still running. */

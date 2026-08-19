@@ -12,6 +12,8 @@ import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-subprocess'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import { registerCandidateFileRoutes } from './files.ts'
 import {
   GitCommandError, runGit, resolveRunsRoot, writeEvidence, type GitConfig,
 } from './git.ts'
@@ -55,6 +57,7 @@ export interface Config {
   maxResponseChars?: number
   maxStatusChars?: number
   maxPatchPreviewChars?: number
+  maxAcceptedHistoryChars?: number
   gitCommand?: string
   gitGraceMs?: number
   gitMaxOutputBytes?: number
@@ -70,6 +73,7 @@ export const Config: z<Config> = z.object({
   maxResponseChars: z.number().step(1).min(1_000).default(60_000),
   maxStatusChars: z.number().step(1).min(1_000).default(20_000),
   maxPatchPreviewChars: z.number().step(1).min(1_000).default(40_000),
+  maxAcceptedHistoryChars: z.number().step(1).min(1_000).default(80_000),
   gitCommand: z.string().default('git'),
   gitGraceMs: z.number().step(1).min(1).default(5_000),
   gitMaxOutputBytes: z.number().step(1).min(1_024).default(8 * 1_024 * 1_024),
@@ -112,6 +116,21 @@ interface ResolvedRepository {
 interface TraceObservation {
   readonly emit: boolean
   readonly tool?: DualEvalToolEvidence
+}
+
+interface AcceptedRoundContext {
+  readonly sequence: number
+  readonly task: string
+  readonly modelLabel: string
+  readonly response: string
+  readonly commit: string
+}
+
+export interface AcceptedHistoryProjection {
+  readonly text: string
+  readonly totalRounds: number
+  readonly includedRounds: number
+  readonly truncated: boolean
 }
 
 function errorText(error: unknown): string {
@@ -334,11 +353,14 @@ export function parseNumstat(output: string): DualEvalChangeStats {
   let deletions = 0
   let filesChanged = 0
   let binaryFiles = 0
+  const files: string[] = []
   for (const line of output.split('\n')) {
     if (line === '') continue
-    const [added, deleted] = line.split('\t', 3)
+    const [added, deleted, ...pathParts] = line.split('\t')
     if (added === undefined || deleted === undefined) continue
     filesChanged += 1
+    const path = pathParts.join('\t')
+    if (path !== '') files.push(path)
     if (added === '-' || deleted === '-') {
       binaryFiles += 1
       continue
@@ -346,7 +368,7 @@ export function parseNumstat(output: string): DualEvalChangeStats {
     additions += Number.parseInt(added, 10) || 0
     deletions += Number.parseInt(deleted, 10) || 0
   }
-  return { additions, deletions, filesChanged, binaryFiles }
+  return { additions, deletions, filesChanged, binaryFiles, files }
 }
 
 function requiredString(value: unknown, field: string, max = 512): string {
@@ -458,8 +480,90 @@ function parseAdoptionPayload(rawInput: string): AdoptionPayload {
   return { version: 1, runId, index: value.index as number }
 }
 
-function childPrompt(task: string, baseCommit: string): string {
-  return `Evaluation task:\n${task}\n\nAll candidates started from Git commit ${baseCommit}. Implement the task only in this worktree.`
+function acceptedRoundBlock(round: AcceptedRoundContext): string {
+  return [
+    `## Accepted round ${String(round.sequence)}`,
+    `User request:\n${round.task}`,
+    `Accepted candidate: ${round.modelLabel}`,
+    `Accepted commit: ${round.commit}`,
+    `Accepted final response:\n${round.response === '' ? '(The accepted candidate returned no text.)' : round.response}`,
+  ].join('\n\n')
+}
+
+/** Project only adopted rounds into bounded shared context for fresh child Sessions. */
+export function projectAcceptedHistory(
+  events: readonly SessionEvent[],
+  maxChars: number,
+): AcceptedHistoryProjection {
+  const starts = new Map<string, Extract<SessionEvent, { type: 'dual-eval/run-start' }>>()
+  const workers = new Map<string, Extract<SessionEvent, { type: 'dual-eval/worker-end' }>>()
+  const rounds: AcceptedRoundContext[] = []
+  for (const event of events) {
+    if (event.type === 'dual-eval/run-start') {
+      starts.set(event.data.runId, event)
+      continue
+    }
+    if (event.type === 'dual-eval/worker-end') {
+      workers.set(`${event.data.runId}\u0000${String(event.data.evidence.index)}`, event)
+      continue
+    }
+    if (event.type !== 'dual-eval/adopted') continue
+    const start = starts.get(event.data.runId)
+    const worker = workers.get(`${event.data.runId}\u0000${String(event.data.index)}`)
+    if (start === undefined || worker === undefined) continue
+    rounds.push({
+      sequence: rounds.length + 1,
+      task: start.data.task,
+      modelLabel: event.data.model.label,
+      response: worker.data.evidence.response,
+      commit: event.data.commit,
+    })
+  }
+
+  const selected: string[] = []
+  let remaining = maxChars
+  let truncated = false
+  for (let index = rounds.length - 1; index >= 0; index -= 1) {
+    const round = rounds[index]
+    if (round === undefined) continue
+    const block = acceptedRoundBlock(round)
+    const separatorChars = selected.length === 0 ? 0 : 2
+    if (block.length + separatorChars <= remaining) {
+      selected.unshift(block)
+      remaining -= block.length + separatorChars
+      continue
+    }
+    truncated = true
+    if (selected.length === 0 && remaining > 80) {
+      const marker = '\n\n… [older accepted response truncated]'
+      selected.unshift(`${block.slice(0, Math.max(0, remaining - marker.length))}${marker}`)
+    }
+    break
+  }
+  if (selected.length < rounds.length) truncated = true
+  return {
+    text: selected.join('\n\n'),
+    totalRounds: rounds.length,
+    includedRounds: selected.length,
+    truncated,
+  }
+}
+
+function childPrompt(task: string, baseCommit: string, acceptedHistory: string): string {
+  const history = acceptedHistory === ''
+    ? ''
+    : [
+      'Accepted conversation history from earlier rounds follows.',
+      'It is inherited project context: use it to resolve references in the current request.',
+      'The current request is authoritative if it conflicts with older text.',
+      'Do not claim that you cannot see previous rounds when this section is present.',
+      '',
+      acceptedHistory,
+      '',
+      '--- End accepted conversation history ---',
+      '',
+    ].join('\n')
+  return `${history}Current evaluation task:\n${task}\n\nThe worktree starts from Git commit ${baseCommit}, which includes the adopted code baseline. Inspect it and continue development only in this worktree.`
 }
 
 async function settle(run: SubagentRun): Promise<SettledChild> {
@@ -486,6 +590,7 @@ async function captureWorker(
   route: DualEvalModelRoute,
   task: string,
   baseCommit: string,
+  acceptedHistory: string,
   worktree: string,
   artifactDirectory: string,
   parent: Agent,
@@ -503,13 +608,19 @@ async function captureWorker(
   let response = ''
   let error: string | undefined
   let trace = { metrics: zeroMetrics(), tools: [] as readonly DualEvalToolEvidence[], toolsTruncated: false }
-  let changes: DualEvalChangeStats = { additions: 0, deletions: 0, filesChanged: 0, binaryFiles: 0 }
+  let changes: DualEvalChangeStats = {
+    additions: 0,
+    deletions: 0,
+    filesChanged: 0,
+    binaryFiles: 0,
+    files: [],
+  }
   parent.session.append('dual-eval/worker-start', { runId, model: route })
 
   try {
     const run = await ctx.subagents.start(PROVIDER_NAME, {
       label: `${route.label} isolated comparison`,
-      prompt: [{ type: 'text', text: childPrompt(task, baseCommit) }],
+      prompt: [{ type: 'text', text: childPrompt(task, baseCommit, acceptedHistory) }],
       parent,
       signal,
       maxDepth: 1,
@@ -610,6 +721,7 @@ async function runComparison(
       event.type === 'dual-eval/adopted' && event.data.runId === latestEnd.data.runId)
     if (!adopted) throw new Error('需要先采纳上一轮的一个模型结果，才能开始新的对比')
   }
+  const acceptedHistory = projectAcceptedHistory(parent.session.events, config.maxAcceptedHistoryChars)
   const cwd = parent.session.header.cwd
   if (cwd === undefined) throw new Error('compare-models requires a session workspace')
   const git: GitConfig = {
@@ -643,6 +755,7 @@ async function runComparison(
     repository: canonicalRepository,
     repositoryInitialized: repository.initialized,
     baseCommit,
+    acceptedContext: acceptedHistory,
   }, null, 2)}\n`)
   const turn = (parent.session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 0) + 1
   parent.session.append('turn/start', { turn })
@@ -679,6 +792,7 @@ async function runComparison(
       route,
       payload.task,
       baseCommit,
+      acceptedHistory.text,
       worktrees[index] as string,
       artifactDirectory,
       parent,
@@ -847,6 +961,17 @@ export function apply(ctx: Context, config: Config): void {
   // installed Harness safely reload this out-of-tree plugin's durable events.
   const known = KNOWN_SESSION_EVENT_TYPES as Set<string>
   for (const eventType of EVENT_TYPES) known.add(eventType)
+  ctx.inject(['webServer'], (httpCtx) => {
+    httpCtx.effect(
+      () => registerCandidateFileRoutes(httpCtx, {
+        command: resolved.gitCommand,
+        graceMs: resolved.gitGraceMs,
+        maxOutputBytes: resolved.gitMaxOutputBytes,
+        ...(resolved.runsRoot === undefined ? {} : { runsRoot: resolved.runsRoot }),
+      }),
+      'dsh-dual-model-eval: candidate file preview and downloads',
+    )
+  })
   ctx.subagents.registerProvider(new IsolatedWorktreeProvider(PROVIDER_NAME))
   ctx.commands.register({
     name: COMMAND_NAME,
@@ -881,6 +1006,7 @@ export function apply(ctx: Context, config: Config): void {
 }
 
 export type {
-  DualEvalChangeStats, DualEvalModelRoute, DualEvalRunStatus, DualEvalToolEvidence,
-  DualEvalWorkerEvidence, DualEvalWorkerMetrics, DualEvalWorkerProgress,
+  DualEvalChangeStats, DualEvalFilePreview, DualEvalFileRequest, DualEvalModelRoute,
+  DualEvalRunStatus, DualEvalToolEvidence, DualEvalWorkerEvidence, DualEvalWorkerMetrics,
+  DualEvalWorkerProgress, DualEvalWorkspaceRequest,
 } from './types.ts'

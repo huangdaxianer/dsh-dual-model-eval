@@ -31,6 +31,7 @@ The repository contains committed, prebuilt `lib/` artifacts. Installing from Gi
 - Compact elapsed-time and tool-count summaries, with token, cache, TTFT, decoding, and tool details inside the expanded view.
 - Side-by-side final replies and line-change statistics (`+added`, `-deleted`, percentages, and changed-file count).
 - An **Adopt this result** action that commits the chosen patch locally and advances the shared baseline for later rounds.
+- Later rounds inherit the accepted requests, final responses, and commits, while unselected candidate responses stay out of the shared context.
 - A composer gate that prevents the next round until one completed candidate has been adopted.
 
 ## Use
@@ -39,7 +40,7 @@ The repository contains committed, prebuilt `lib/` artifacts. Installing from Gi
 2. Select at least two model routes that are already configured in Harness.
 3. Submit one coding request. Result cards appear immediately and stream progress while both agents run.
 4. Inspect each answer and its expandable tool trajectory.
-5. Choose **Adopt this result** under the preferred candidate. The next comparison starts from that committed code baseline.
+5. Choose **Adopt this result** under the preferred candidate. The next comparison starts from that committed code baseline and receives the accepted conversation context.
 
 ## Git and workspace behavior
 

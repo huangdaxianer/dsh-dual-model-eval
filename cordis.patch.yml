@@ -10,3 +10,4 @@
         keepWorktrees: false
         timeoutMs: 1800000
         maxModels: 4
+        maxAcceptedHistoryChars: 80000

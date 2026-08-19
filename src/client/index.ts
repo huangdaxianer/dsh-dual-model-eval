@@ -8,7 +8,7 @@ import type { CommandRowProps } from '@deepseek-ai/dsh-client-ui-conversation/cl
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type {} from '@deepseek-ai/dsh-commands/types'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import type { DualEvalModelRoute } from '../types.ts'
+import type { DualEvalFilePreview, DualEvalModelRoute } from '../types.ts'
 import { ComparisonAdoptionGate, requiresComparisonAdoption } from './adoption-gate.ts'
 import { ComparisonRunNode, type ComparisonRunInjected } from './ComparisonView.tsx'
 import { dualEvalRunDefinition } from './comparison-view-model.ts'
@@ -69,6 +69,32 @@ function encodeRequest(value: unknown): string {
 
 function transportError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+const FILES_ENDPOINT = '/dual-model-eval-files'
+
+async function postJson<T>(path: string, value: unknown): Promise<T> {
+  const response = await fetch(`${FILES_ENDPOINT}/${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(value),
+  })
+  const payload = await response.json() as { error?: unknown } & T
+  if (!response.ok) {
+    throw new Error(typeof payload.error === 'string' ? payload.error : `HTTP ${String(response.status)}`)
+  }
+  return payload
+}
+
+async function downloadCandidate(value: unknown): Promise<void> {
+  const download = await postJson<{ url: string; filename: string }>('prepare', value)
+  const anchor = document.createElement('a')
+  anchor.href = download.url
+  anchor.download = download.filename
+  anchor.hidden = true
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 function HiddenCommandRow(_props: CommandRowProps): null {
@@ -242,6 +268,9 @@ export function apply(ctx: ClientContext): void {
         if (result.value === undefined) throw new Error('compare-models-adopt command is unavailable')
         if (result.value.result.kind === 'error') throw new Error(result.value.result.text)
       },
+      previewFile: request => postJson<DualEvalFilePreview>('preview', request),
+      downloadFile: request => downloadCandidate({ ...request, kind: 'file' }),
+      downloadWorkspace: request => downloadCandidate({ ...request, kind: 'workspace' }),
     }),
   }, ComparisonRunNode))
 
