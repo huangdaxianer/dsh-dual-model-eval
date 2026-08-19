@@ -110,6 +110,7 @@ describe('dual-model evidence projection', () => {
       deletions: 10,
       filesChanged: 3,
       binaryFiles: 1,
+      files: ['src/a.ts', 'src/b.ts', 'image.png'],
     })
   })
 })

@@ -1,8 +1,8 @@
-# dsh-dual-model-eval
+# DeepSeek Harness 多模型对比评测（`dsh-dual-model-eval`）
 
 [English](README.md) | 简体中文
 
-这是一个可安装的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 多模型编码对比组合包。一次请求可以并发发送给多个已配置模型；每个模型在隔离的 detached Git worktree 中开发；Web 界面会在普通的**对话**页签中实时展示工具轨迹，并把结果并排放在一起比较。
+在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 中并排对比多个编码模型。`dsh-dual-model-eval` 是一个可安装的多模型与 Coding Agent 评测插件：一次 Prompt 会并发发送给多个已配置的 LLM 路由，每个模型在隔离的 Git worktree 中开发，普通的**对话**页签会实时展示工具轨迹以及可比较、可采纳的结果。
 
 > 兼容性：首个版本面向 DeepSeek Harness `0.1.0-rc.7`。DeepSeek Harness 目前仍是开发者预览版，不同 RC 版本之间的插件接口可能发生变化。
 
@@ -11,7 +11,7 @@
 把固定版本安装进内置 `web` profile：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add github:huangdaxianer/dsh-dual-model-eval#v0.1.0
+npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add github:huangdaxianer/dsh-dual-model-eval#v0.1.1
 ```
 
 安装后重启 Harness Web 进程：
@@ -30,7 +30,9 @@ npx @deepseek-ai/dsh@0.1.0-rc.7 web
 - 运行过程中实时展示每个模型的工具调用轨迹，并支持分别展开和折叠。
 - 折叠态仅显示耗时和工具次数；展开后显示 Token、缓存命中、TTFT、解码耗时和工具详情。
 - 并排展示最终回复及代码增删行数、比例和改动文件数。
+- 在页面内预览改动文件，并可下载单个编辑后文件或候选模型的完整 worktree。
 - 每个结果下提供“采纳此结果”按钮；采纳后创建本地 commit，后续轮次从这份代码基线继续。
+- 后续轮次同时继承已采纳轮次的用户需求、最终回复和 commit；未采纳候选的回答不会混入共享上下文。
 - 一轮对比结束后，在采纳一个候选之前锁定输入框，避免上下文和代码基线分叉。
 
 ## 使用方法
@@ -39,7 +41,7 @@ npx @deepseek-ai/dsh@0.1.0-rc.7 web
 2. 至少选择两个已经在 Harness 中配置好的模型路由。
 3. 发送一个编码需求；两个结果卡片会立即出现，并在运行中持续更新。
 4. 分别检查最终回复和可展开的工具调用轨迹。
-5. 在更满意的候选下面点击“采纳此结果”；下一轮会基于该结果对应的 commit 继续。
+5. 在更满意的候选下面点击“采纳此结果”；下一轮会基于该结果对应的 commit 和已采纳对话上下文继续。
 
 ## Git 与工作区行为
 
@@ -57,7 +59,7 @@ npx @deepseek-ai/dsh@0.1.0-rc.7 web
 安装新的固定版本：
 
 ```sh
-npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add github:huangdaxianer/dsh-dual-model-eval#v0.1.0
+npx @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add github:huangdaxianer/dsh-dual-model-eval#v0.1.1
 ```
 
 卸载：

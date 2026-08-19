@@ -1,14 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  DisclosureRow, IconApiOutline14, MarkdownText, StateDot, type StateDotState,
+  DisclosureRow, IconApiOutline14, IconCodeOutline16, IconDownloadOutline16,
+  IconFolderOpenOutline16, MarkdownText, Modal, StateDot, type StateDotState,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DualEvalRunSnapshot, DualEvalWorkerSnapshot } from './comparison-view-model.ts'
-import type { DualEvalChangeStats, DualEvalToolEvidence, DualEvalWorkerMetrics } from '../types.ts'
+import type {
+  DualEvalChangeStats, DualEvalFilePreview, DualEvalFileRequest, DualEvalToolEvidence,
+  DualEvalWorkerEvidence, DualEvalWorkerMetrics, DualEvalWorkspaceRequest,
+} from '../types.ts'
 import css from './ComparisonView.module.css'
 
 export interface ComparisonRunInjected {
   readonly adopt: (runId: string, index: number) => Promise<void>
+  readonly previewFile: (request: DualEvalFileRequest) => Promise<DualEvalFilePreview>
+  readonly downloadFile: (request: DualEvalFileRequest) => Promise<void>
+  readonly downloadWorkspace: (request: DualEvalWorkspaceRequest) => Promise<void>
 }
 
 /** Complete props for the keyed comparison renderer in the Chat flow. */
@@ -49,12 +56,12 @@ function duration(ms: number): string {
 function processSummaryStats(
   metrics: DualEvalWorkerMetrics | undefined,
   elapsedMs: number,
+  running: boolean,
   t: PropsLocale<'dualEval'>['t'],
 ): string[] {
-  return [
-    t('process.elapsed', { duration: duration(elapsedMs) }),
-    t('process.tools', { count: metrics?.toolCalls ?? 0 }),
-  ]
+  const groups = [t('process.elapsed', { duration: duration(elapsedMs) })]
+  if (!running) groups.push(t('process.tools', { count: metrics?.toolCalls ?? 0 }))
+  return groups
 }
 
 function processExpandedStats(
@@ -81,19 +88,12 @@ function processExpandedStats(
   return groups
 }
 
-function changeRatios(changes: DualEvalChangeStats): { added: number; deleted: number } {
-  const total = changes.additions + changes.deletions
-  if (total === 0) return { added: 0, deleted: 0 }
-  const added = Math.round(changes.additions / total * 100)
-  return { added, deleted: 100 - added }
-}
-
 function toolSummary(tool: DualEvalToolEvidence): string {
   try {
     const parsed = JSON.parse(tool.argsRaw) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return tool.argsRaw
     const args = parsed as Record<string, unknown>
-    for (const key of ['cmd', 'command', 'path', 'filePath', 'query', 'pattern', 'url']) {
+    for (const key of ['cmd', 'command', 'path', 'filePath', 'file_path', 'query', 'pattern', 'url']) {
       const value = args[key]
       if (typeof value === 'string' && value !== '') return value.split('\n')[0] ?? ''
     }
@@ -108,6 +108,30 @@ function toolOutput(tool: DualEvalToolEvidence): string {
     .filter((block): block is Extract<(typeof tool.content)[number], { type: 'text' }> => block.type === 'text')
     .map(block => block.text)
     .join('')
+}
+
+function latestObservedTool(tools: readonly DualEvalToolEvidence[]): DualEvalToolEvidence | undefined {
+  return tools.at(-1)
+}
+
+function changedFilePaths(evidence: DualEvalWorkerEvidence): readonly string[] {
+  const declared = evidence.changes?.files ?? []
+  if (declared.length > 0) return declared
+  const paths = new Set<string>()
+  for (const line of evidence.patchPreview.split('\n')) {
+    if (!line.startsWith('diff --git ')) continue
+    const marker = line.lastIndexOf(' b/')
+    if (marker < 0) continue
+    const path = line.slice(marker + 3).replace(/^"|"$/gu, '')
+    if (path !== '' && path !== '/dev/null') paths.add(path)
+  }
+  if (paths.size > 0) return [...paths]
+  for (const line of evidence.status.split('\n')) {
+    if (line.length < 4) continue
+    const path = (line.slice(3).split(' -> ').at(-1) ?? '').trim().replace(/^"|"$/gu, '')
+    if (path !== '') paths.add(path)
+  }
+  return [...paths]
 }
 
 function ToolTraceRow({ tool }: { tool: DualEvalToolEvidence }) {
@@ -208,14 +232,40 @@ function ProcessDetails({ worker, t }: {
   const metrics = evidence?.metrics ?? progress?.metrics
   const toolsTruncated = evidence?.toolsTruncated ?? progress?.toolsTruncated ?? false
   const running = evidence === undefined
-  const summaryStats = processSummaryStats(metrics, elapsedMs, t)
+  const summaryStats = processSummaryStats(metrics, elapsedMs, running, t)
   const expandedStats = processExpandedStats(metrics, t)
+  // Real tools often finish between two browser paints. Keep the latest Tool
+  // visible for the rest of the live run so brief calls are not lost entirely.
+  const currentTool = running ? latestObservedTool(tools) : undefined
+  const currentToolDetail = currentTool === undefined ? '' : toolSummary(currentTool)
+  const currentToolLabel = currentTool === undefined
+    ? ''
+    : [currentTool.name, currentToolDetail].filter(value => value !== '').join(' · ')
   return (
     <details className={css.processDetails} aria-label={t('process.title')}>
       <summary title={t('process.title')}>
         <span className={css.processSummaryStats}>
           {summaryStats.map(value => <span key={value}>{value}</span>)}
         </span>
+        {currentTool !== undefined && (
+          <span
+            key={currentTool.callId}
+            className={css.currentToolTicker}
+            aria-live="polite"
+            title={currentToolLabel}
+          >
+            <span className={css.currentToolTickerInner}>
+              <IconApiOutline14 size={13} />
+              <span className={css.currentToolName}>{currentTool.name}</span>
+              {currentToolDetail !== '' && (
+                <>
+                  <span className={css.currentToolSeparator} aria-hidden>·</span>
+                  <span className={css.currentToolDetail}>{currentToolDetail}</span>
+                </>
+              )}
+            </span>
+          </span>
+        )}
       </summary>
       <div className={css.processBody}>
         {(running || expandedStats.length > 0) && (
@@ -233,32 +283,189 @@ function ProcessDetails({ worker, t }: {
   )
 }
 
-function ChangeSummary({ changes, t }: {
-  changes: DualEvalChangeStats | undefined
+function FilePreviewDialog({ run, worker, files, open, onClose, previewFile, downloadFile, downloadWorkspace, t }: {
+  run: DualEvalRunSnapshot
+  worker: DualEvalWorkerSnapshot
+  files: readonly string[]
+  open: boolean
+  onClose: () => void
+  previewFile: ComparisonRunInjected['previewFile']
+  downloadFile: ComparisonRunInjected['downloadFile']
+  downloadWorkspace: ComparisonRunInjected['downloadWorkspace']
   t: PropsLocale<'dualEval'>['t']
 }) {
-  if (changes === undefined) return <span className={css.changeUnknown}>{t('changes.unknown')}</span>
-  const ratio = changeRatios(changes)
+  const [selectedPath, setSelectedPath] = useState(files[0] ?? '')
+  const [preview, setPreview] = useState<DualEvalFilePreview>()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string>()
+  const [downloading, setDownloading] = useState<'file' | 'workspace'>()
+  const requestBase: DualEvalWorkspaceRequest = {
+    artifactDirectory: run.artifactDirectory,
+    runId: run.runId,
+    index: worker.route.index,
+  }
+
+  useEffect(() => {
+    if (!open) return
+    if (selectedPath === '' || !files.includes(selectedPath)) setSelectedPath(files[0] ?? '')
+  }, [files, open, selectedPath])
+
+  useEffect(() => {
+    if (!open || selectedPath === '') return
+    let active = true
+    setLoading(true)
+    setPreview(undefined)
+    setError(undefined)
+    void previewFile({ ...requestBase, path: selectedPath }).then((value) => {
+      if (active) setPreview(value)
+    }).catch((cause: unknown) => {
+      if (active) setError(t('files.error', { message: errorText(cause) }))
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => { active = false }
+  }, [open, previewFile, run.artifactDirectory, run.runId, selectedPath, t, worker.route.index])
+
+  const startDownload = async (kind: 'file' | 'workspace') => {
+    setDownloading(kind)
+    setError(undefined)
+    try {
+      if (kind === 'workspace') await downloadWorkspace(requestBase)
+      else await downloadFile({ ...requestBase, path: selectedPath })
+    } catch (cause: unknown) {
+      setError(t('files.downloadFailed', { message: errorText(cause) }))
+    } finally {
+      setDownloading(undefined)
+    }
+  }
+
   return (
-    <div className={css.changeSummary} aria-label={t('changes.aria', {
-      additions: changes.additions,
-      deletions: changes.deletions,
-      added: ratio.added,
-      deleted: ratio.deleted,
-    })}>
-      <span className={css.additions}>+{compactNumber(changes.additions)}</span>
-      <span className={css.deletions}>-{compactNumber(changes.deletions)}</span>
-      <span className={css.changeRatio}>{t('changes.ratio', { added: ratio.added, deleted: ratio.deleted })}</span>
-      <span className={css.changeFiles}>{t('changes.files', { count: changes.filesChanged })}</span>
-      {changes.binaryFiles > 0 && <span className={css.changeFiles}>{t('changes.binary', { count: changes.binaryFiles })}</span>}
-    </div>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t('files.dialogTitle', { model: worker.route.label })}
+      closeLabel={t('files.close')}
+      className={css.fileDialogModal ?? ''}
+      contentClassName={css.fileDialogContent ?? ''}
+    >
+      <div className={css.fileDialogToolbar}>
+        <p>{t('files.workspaceHint')}</p>
+        <button
+          type="button"
+          className={css.downloadButton}
+          disabled={downloading !== undefined}
+          onClick={() => { void startDownload('workspace') }}
+        >
+          <IconFolderOpenOutline16 size={16} />
+          <span>{downloading === 'workspace' ? t('files.downloading') : t('files.downloadWorkspace')}</span>
+        </button>
+      </div>
+      <div className={css.fileDialogLayout}>
+        <aside className={css.fileListPane} aria-label={t('changes.fileList')}>
+          <div className={css.fileListTitle}>{t('changes.files', { count: files.length })}</div>
+          <div className={css.fileList}>
+            {files.map(path => (
+              <button
+                key={path}
+                type="button"
+                data-selected={path === selectedPath || undefined}
+                title={path}
+                onClick={() => { setSelectedPath(path) }}
+              >
+                <IconCodeOutline16 size={15} />
+                <span>{path}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+        <section className={css.filePreviewPane} aria-label={t('files.preview')}>
+          <header className={css.filePreviewHeader}>
+            <code title={selectedPath}>{selectedPath}</code>
+            <button
+              type="button"
+              className={css.downloadButton}
+              disabled={downloading !== undefined || preview?.deleted === true || selectedPath === ''}
+              onClick={() => { void startDownload('file') }}
+            >
+              <IconDownloadOutline16 size={16} />
+              <span>{downloading === 'file' ? t('files.downloading') : t('files.downloadFile')}</span>
+            </button>
+          </header>
+          <div className={css.filePreviewBody}>
+            {loading && <p className={css.filePreviewState}>{t('files.loading')}</p>}
+            {!loading && error !== undefined && <p className={css.filePreviewError}>{error}</p>}
+            {!loading && error === undefined && preview?.deleted === true && (
+              <p className={css.filePreviewState}>{t('files.deleted')}</p>
+            )}
+            {!loading && error === undefined && preview?.binary === true && (
+              <p className={css.filePreviewState}>{t('files.binary', { size: compactNumber(preview.size) })}</p>
+            )}
+            {!loading && error === undefined && preview !== undefined && !preview.deleted && !preview.binary && (
+              <>
+                <pre>{preview.content}</pre>
+                {preview.truncated && <p className={css.filePreviewTruncated}>{t('files.truncated')}</p>}
+              </>
+            )}
+          </div>
+        </section>
+      </div>
+    </Modal>
   )
 }
 
-function AdoptionFooter({ run, worker, adopt, t }: {
+function ChangeSummary({ run, worker, changes, files, previewFile, downloadFile, downloadWorkspace, t }: {
   run: DualEvalRunSnapshot
   worker: DualEvalWorkerSnapshot
-  adopt: ComparisonRunInjected['adopt']
+  changes: DualEvalChangeStats | undefined
+  files: readonly string[]
+  previewFile: ComparisonRunInjected['previewFile']
+  downloadFile: ComparisonRunInjected['downloadFile']
+  downloadWorkspace: ComparisonRunInjected['downloadWorkspace']
+  t: PropsLocale<'dualEval'>['t']
+}) {
+  const [open, setOpen] = useState(false)
+  if (changes === undefined) return <span className={css.changeUnknown}>{t('changes.unknown')}</span>
+  return (
+    <>
+      <button
+        type="button"
+        className={css.fileArtifactRow}
+        aria-label={t('changes.aria', {
+          count: changes.filesChanged,
+          additions: changes.additions,
+          deletions: changes.deletions,
+        })}
+        disabled={files.length === 0}
+        onClick={() => { setOpen(true) }}
+      >
+        <span className={css.fileArtifactCount}>
+          <IconCodeOutline16 size={15} />
+          {t('changes.files', { count: changes.filesChanged })}
+        </span>
+        <span className={css.fileArtifactDiff}>
+          <span className={css.additions}>+{compactNumber(changes.additions)}</span>
+          <span className={css.deletions}>-{compactNumber(changes.deletions)}</span>
+        </span>
+      </button>
+      <FilePreviewDialog
+        run={run}
+        worker={worker}
+        files={files}
+        open={open}
+        onClose={() => { setOpen(false) }}
+        previewFile={previewFile}
+        downloadFile={downloadFile}
+        downloadWorkspace={downloadWorkspace}
+        t={t}
+      />
+    </>
+  )
+}
+
+function AdoptionFooter({ run, worker, transport, t }: {
+  run: DualEvalRunSnapshot
+  worker: DualEvalWorkerSnapshot
+  transport: ComparisonRunInjected
   t: PropsLocale<'dualEval'>['t']
 }) {
   const [pending, setPending] = useState(false)
@@ -277,7 +484,7 @@ function AdoptionFooter({ run, worker, adopt, t }: {
     setPending(true)
     setError(undefined)
     try {
-      await adopt(run.runId, worker.route.index)
+      await transport.adopt(run.runId, worker.route.index)
     } catch (cause: unknown) {
       setError(t('action.adoptFailed', { message: errorText(cause) }))
     } finally {
@@ -287,7 +494,16 @@ function AdoptionFooter({ run, worker, adopt, t }: {
 
   return (
     <footer className={css.adoptionFooter}>
-      <ChangeSummary changes={evidence?.changes} t={t} />
+      <ChangeSummary
+        run={run}
+        worker={worker}
+        changes={evidence?.changes}
+        files={evidence === undefined ? [] : changedFilePaths(evidence)}
+        previewFile={transport.previewFile}
+        downloadFile={transport.downloadFile}
+        downloadWorkspace={transport.downloadWorkspace}
+        t={t}
+      />
       <button
         type="button"
         className={css.adoptButton}
@@ -303,10 +519,10 @@ function AdoptionFooter({ run, worker, adopt, t }: {
   )
 }
 
-function WorkerCard({ run, worker, adopt, t }: {
+function WorkerCard({ run, worker, transport, t }: {
   run: DualEvalRunSnapshot
   worker: DualEvalWorkerSnapshot
-  adopt: ComparisonRunInjected['adopt']
+  transport: ComparisonRunInjected
   t: PropsLocale<'dualEval'>['t']
 }) {
   const status = workerStatus(worker, t)
@@ -333,16 +549,16 @@ function WorkerCard({ run, worker, adopt, t }: {
           {evidence?.error !== undefined && <div className={css.workerError}>{evidence.error}</div>}
           <ProcessDetails worker={worker} t={t} />
           {evidence !== undefined && <ResponseSection worker={worker} t={t} />}
-          {evidence !== undefined && <AdoptionFooter run={run} worker={worker} adopt={adopt} t={t} />}
+          {evidence !== undefined && <AdoptionFooter run={run} worker={worker} transport={transport} t={t} />}
         </div>
       )}
     </article>
   )
 }
 
-function RunCards({ run, adopt, t }: {
+function RunCards({ run, transport, t }: {
   run: DualEvalRunSnapshot
-  adopt: ComparisonRunInjected['adopt']
+  transport: ComparisonRunInjected
   t: PropsLocale<'dualEval'>['t']
 }) {
   return (
@@ -359,7 +575,7 @@ function RunCards({ run, adopt, t }: {
             key={`${run.runId}-${String(worker.route.index)}`}
             run={run}
             worker={worker}
-            adopt={adopt}
+            transport={transport}
             t={t}
           />
         ))}
@@ -369,10 +585,26 @@ function RunCards({ run, adopt, t }: {
 }
 
 /** Render one durable side-by-side comparison directly inside the ordinary Chat flow. */
-export function ComparisonRunNode({ node, adopt, t }: ComparisonRunNodeProps) {
+export function ComparisonRunNode({ node, adopt, previewFile, downloadFile, downloadWorkspace, t }: ComparisonRunNodeProps) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const viewport = root?.closest<HTMLElement>('[data-conversation-scroll]')
+    if (root === null || viewport === null || viewport === undefined) return
+    const updateWidth = () => {
+      if (viewport.clientWidth > 0) {
+        root.style.setProperty('--dual-eval-available-width', `${String(Math.max(0, viewport.clientWidth - 24))}px`)
+      }
+    }
+    updateWidth()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(viewport)
+    return () => { observer.disconnect() }
+  }, [])
   return (
-    <div className={css.chatNode} data-dual-eval-run={node.data.runId}>
-      <RunCards run={node.data} adopt={adopt} t={t} />
+    <div ref={rootRef} className={css.chatNode} data-dual-eval-run={node.data.runId}>
+      <RunCards run={node.data} transport={{ adopt, previewFile, downloadFile, downloadWorkspace }} t={t} />
     </div>
   )
 }
