@@ -1,11 +1,16 @@
 {
   "name": "dsh-dual-model-eval",
-  "version": "0.1.0",
-  "description": "Installable DeepSeek Harness bundle for isolated multi-model coding comparisons",
+  "version": "0.1.1",
+  "description": "Compare multiple coding models side by side in DeepSeek Harness with isolated Git worktrees",
   "keywords": [
+    "deepseek",
     "deepseek-harness",
     "dsh-plugin",
+    "multi-model",
     "model-evaluation",
+    "llm-evaluation",
+    "agent-evaluation",
+    "side-by-side",
     "git-worktree",
     "coding-agent"
   ],
