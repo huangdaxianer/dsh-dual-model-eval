@@ -1,6 +1,6 @@
 {
   "name": "dsh-dual-model-eval",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Compare multiple coding models side by side in DeepSeek Harness with isolated Git worktrees",
   "keywords": [
     "deepseek",
@@ -44,6 +44,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],

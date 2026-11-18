@@ -1,10 +1,15 @@
 .root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin-top: 2px;
   padding-top: 4px;
   border-top: 1px solid var(--dsw-alias-border-l1);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
+
+.root > :not(.groups) { flex: none; }
 
 .compareSwitch {
   display: flex;
@@ -49,7 +54,7 @@
 .summaryWarning { color: var(--dsw-alias-state-warn-label); }
 .summaryHint { color: var(--dsw-alias-label-caption); }
 
-.groups { max-height: min(300px, calc(100vh - 320px)); overflow-y: auto; }
+.groups { min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
 .group + .group { margin-top: 4px; }
 .groupTitle { position: sticky; top: 0; z-index: 1; padding: 6px 9px 3px; background: var(--dsw-specific-menu); color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 17px; font-weight: 600; }
 

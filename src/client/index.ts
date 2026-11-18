@@ -289,6 +289,7 @@ export function apply(ctx: ClientContext): void {
     const scopedSessions = scope.sessions as unknown as ISessions
     scope.slots.inject('conversation.input.model', () => scope.slots.register({
       name: 'conversation.input.model',
+      priority: -1,
       inject: (sessionId): ModelSelectInjected & ComparisonMenuInjected
         & { t: TranslateNS<'model'>; dualT: TranslateNS<'dualEval'> } => {
         const directory = models.directoryFor(sessionId)

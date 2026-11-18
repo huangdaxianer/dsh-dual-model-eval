@@ -41,11 +41,7 @@ const EVENT_TYPES = [
   'dual-eval/worker-progress',
   'dual-eval/worker-start',
 ] as const
-const CHILD_PERSONA = 'You are one candidate in a controlled coding evaluation. '
-  + 'Work directly in the current Git worktree and implement the requested change. '
-  + 'Inspect the repository before editing, make concrete file changes, and run relevant tests when possible. '
-  + 'Do not create Git commits, branches, or additional worktrees. '
-  + 'Finish with a concise summary of changed files, verification performed, and any remaining blocker.'
+const WORKTREE_INSTRUCTION = 'If the request requires file changes, make them only in the assigned Git worktree and leave them uncommitted for adoption.'
 
 export interface Config {
   runsRoot?: string
@@ -549,21 +545,9 @@ export function projectAcceptedHistory(
   }
 }
 
-function childPrompt(task: string, baseCommit: string, acceptedHistory: string): string {
-  const history = acceptedHistory === ''
-    ? ''
-    : [
-      'Accepted conversation history from earlier rounds follows.',
-      'It is inherited project context: use it to resolve references in the current request.',
-      'The current request is authoritative if it conflicts with older text.',
-      'Do not claim that you cannot see previous rounds when this section is present.',
-      '',
-      acceptedHistory,
-      '',
-      '--- End accepted conversation history ---',
-      '',
-    ].join('\n')
-  return `${history}Current evaluation task:\n${task}\n\nThe worktree starts from Git commit ${baseCommit}, which includes the adopted code baseline. Inspect it and continue development only in this worktree.`
+function childPrompt(task: string, acceptedHistory: string): string {
+  if (acceptedHistory === '') return task
+  return `Accepted conversation history:\n\n${acceptedHistory}\n\nCurrent user request:\n${task}`
 }
 
 async function settle(run: SubagentRun): Promise<SettledChild> {
@@ -620,11 +604,11 @@ async function captureWorker(
   try {
     const run = await ctx.subagents.start(PROVIDER_NAME, {
       label: `${route.label} isolated comparison`,
-      prompt: [{ type: 'text', text: childPrompt(task, baseCommit, acceptedHistory) }],
+      prompt: [{ type: 'text', text: childPrompt(task, acceptedHistory) }],
       parent,
       signal,
       maxDepth: 1,
-      persona: CHILD_PERSONA,
+      persona: WORKTREE_INSTRUCTION,
       agentOptions: {
         provider: route.provider,
         model: route.model,
